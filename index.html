@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Offline German-to-English Voice Translator</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --accent: #3b82f6;
+      --accent-active: #ef4444;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --border: #334155;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; justify-content: space-between; padding: 1.5rem; }
+    header { text-align: center; margin-top: 1rem; }
+    header h1 { font-size: 1.4rem; font-weight: 700; }
+    header p { color: var(--text-muted); font-size: 0.85rem; margin-top: 0.3rem; }
+    .status-badge { display: inline-block; margin-top: 0.8rem; padding: 0.35rem 0.8rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; background: #334155; color: #cbd5e1; }
+    .status-badge.ready { background: #065f46; color: #6ee7b7; }
+    .status-badge.recording { background: #991b1b; color: #fca5a5; }
+    .progress-bar-container { width: 100%; background: var(--border); height: 8px; border-radius: 4px; overflow: hidden; margin-top: 1rem; display: none; }
+    .progress-bar { width: 0%; height: 100%; background: var(--accent); transition: width 0.2s; }
+    main { display: flex; flex-direction: column; gap: 1.25rem; margin: auto 0; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 1rem; padding: 1.25rem; min-height: 140px; display: flex; flex-direction: column; justify-content: center; }
+    .card-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 0.5rem; font-weight: 600; }
+    .card-content { font-size: 1.15rem; line-height: 1.5; color: var(--text); }
+    .controls { display: flex; flex-direction: column; align-items: center; gap: 1rem; margin-bottom: 1rem; }
+    .mic-button { width: 84px; height: 84px; border-radius: 50%; border: none; background: var(--accent); color: white; display: flex; align-items: center; justify-content: center; font-size: 2rem; cursor: pointer; box-shadow: 0 10px 25px -5px rgba(59, 130, 246, 0.5); transition: transform 0.15s, background 0.2s; }
+    .mic-button:disabled { background: var(--border); box-shadow: none; opacity: 0.5; cursor: not-allowed; }
+    .mic-button.recording { background: var(--accent-active); transform: scale(1.08); box-shadow: 0 10px 25px -5px rgba(239, 68, 68, 0.5); }
+    .btn-label { font-size: 0.85rem; color: var(--text-muted); font-weight: 500; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Offline Voice Translator</h1>
+    <p>Speaks German &rarr; Reads English</p>
+    <div id="status" class="status-badge">Initializing Engine...</div>
+    <div class="progress-bar-container" id="progressContainer">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+  </header>
+
+  <main>
+    <div class="card">
+      <div class="card-label">English Translation</div>
+      <div id="translationOutput" class="card-content">Tap the microphone and speak German...</div>
+    </div>
+  </main>
+
+  <div class="controls">
+    <button id="recordBtn" class="mic-button" disabled>🎙️</button>
+    <span id="buttonLabel" class="btn-label">Loading offline AI (~40 MB)...</span>
+  </div>
+
+  <script type="module">
+    import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+
+    const statusBadge = document.getElementById('status');
+    const recordBtn = document.getElementById('recordBtn');
+    const buttonLabel = document.getElementById('buttonLabel');
+    const output = document.getElementById('translationOutput');
+    const progressContainer = document.getElementById('progressContainer');
+    const progressBar = document.getElementById('progressBar');
+
+    let translator = null;
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let isRecording = false;
+
+    // Initialize Whisper model in browser
+    async function initModel() {
+      try {
+        progressContainer.style.display = 'block';
+        statusBadge.textContent = 'Downloading Model (~40 MB)...';
+
+        translator = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', {
+          progress_callback: (data) => {
+            if (data.status === 'progress') {
+              progressBar.style.width = `${Math.round(data.progress)}%`;
+              buttonLabel.textContent = `Downloading AI: ${Math.round(data.progress)}%`;
+            }
+          }
+        });
+
+        progressContainer.style.display = 'none';
+        statusBadge.className = 'status-badge ready';
+        statusBadge.textContent = 'Ready (Works 100% Offline)';
+        buttonLabel.textContent = 'Tap to Speak German';
+        recordBtn.disabled = false;
+      } catch (err) {
+        statusBadge.textContent = 'Error loading engine';
+        output.textContent = 'Failed to load model: ' + err.message;
+      }
+    }
+
+    initModel();
+
+    // Microphone capture and processing
+    recordBtn.addEventListener('click', async () => {
+      if (!isRecording) {
+        startRecording();
+      } else {
+        stopRecording();
+      }
+    });
+
+    async function startRecording() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+        audioChunks = [];
+
+        mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+        mediaRecorder.onstop = processAudio;
+
+        mediaRecorder.start();
+        isRecording = true;
+        recordBtn.classList.add('recording');
+        statusBadge.className = 'status-badge recording';
+        statusBadge.textContent = 'Listening to German...';
+        buttonLabel.textContent = 'Tap again to Translate';
+        output.textContent = 'Listening...';
+      } catch (err) {
+        alert('Microphone access denied: ' + err.message);
+      }
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+        mediaRecorder.stream.getTracks().forEach(track => track.stop());
+      }
+      isRecording = false;
+      recordBtn.classList.remove('recording');
+      statusBadge.className = 'status-badge';
+      statusBadge.textContent = 'Translating...';
+      buttonLabel.textContent = 'Processing locally...';
+      recordBtn.disabled = true;
+    }
+
+    async function processAudio() {
+      const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+      const arrayBuffer = await audioBlob.arrayBuffer();
+
+      // Convert audio to 16kHz mono Float32Array required by Whisper
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      const audioData = audioBuffer.getChannelData(0);
+
+      try {
+        // Direct speech-to-text translation task: German audio -> English text
+        const result = await translator(audioData, {
+          language: 'german',
+          task: 'translate',
+          chunk_length_s: 30
+        });
+
+        output.textContent = result.text.trim() || '[No speech detected]';
+      } catch (err) {
+        output.textContent = 'Translation error: ' + err.message;
+      } finally {
+        statusBadge.className = 'status-badge ready';
+        statusBadge.textContent = 'Ready (Offline)';
+        buttonLabel.textContent = 'Tap to Speak German';
+        recordBtn.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>
